@@ -6,7 +6,7 @@ import { AzureCliCredential } from "@azure/identity";
 import WebSocket, { WebSocketServer } from "ws";
 import { faceServiceError } from "./face-errors.js";
 import { assessFaces, faceDetectUrl } from "../shared/face-assessment.js";
-import { isLocalRequest, voiceMode, voiceUrl } from "../shared/protocol.js";
+import { isAllowedVoiceClientEvent, isLocalRequest, voiceMode, voiceUrl } from "../shared/protocol.js";
 
 const port = Number(process.env.PORT ?? 5173);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Invalid PORT.");
@@ -19,6 +19,13 @@ const avatarError = !avatarAgent ? "Set FOUNDRY_AVATAR_AGENT_NAME in .env to ena
   avatarAgent === agent ? "FOUNDRY_AVATAR_AGENT_NAME must name a separate avatar-enabled agent." :
     !endpoint ? "Set FOUNDRY_PROJECT_ENDPOINT in .env to enable the avatar." : undefined;
 const avatarUpstreamUrl = endpoint && avatarAgent && !avatarError ? voiceUrl(endpoint, avatarAgent) : undefined;
+const avatarGermanAgent = process.env.FOUNDRY_AVATAR_DE_AGENT_NAME?.trim();
+const avatarGermanError = !avatarGermanAgent ? "Set FOUNDRY_AVATAR_DE_AGENT_NAME in .env to enable the German avatar." :
+  avatarGermanAgent === agent || avatarGermanAgent === avatarAgent ?
+    "FOUNDRY_AVATAR_DE_AGENT_NAME must name a separate German voice avatar agent." :
+    !endpoint ? "Set FOUNDRY_PROJECT_ENDPOINT in .env to enable the German avatar." : undefined;
+const avatarGermanUpstreamUrl = endpoint && avatarGermanAgent && !avatarGermanError ?
+  voiceUrl(endpoint, avatarGermanAgent) : undefined;
 const faceEndpoint = process.env.AZURE_FACE_ENDPOINT;
 const faceUrl = faceEndpoint ? faceDetectUrl(faceEndpoint) : undefined;
 const maxImageBytes = 700_000;
@@ -158,7 +165,10 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({
         configured: Boolean(upstreamUrl), faceConfigured: Boolean(faceUrl), faceOutlineSupported: true,
         faceExposureSupported: true,
+        avatarInterruptionSupported: true,
         avatarConfigured: Boolean(avatarUpstreamUrl), avatarError, endpoint, agent,
+        avatarGermanConfigured: Boolean(avatarGermanUpstreamUrl), avatarGermanError,
+        avatarVoiceLanguageRoutingSupported: true,
       }));
       return;
     }
@@ -191,11 +201,14 @@ server.on("upgrade", (req, socket, head) => {
 });
 sockets.on("connection", (client, req) => {
   const mode = voiceMode(req.url);
-  const selectedUrl = mode === "avatar" ? avatarUpstreamUrl : upstreamUrl;
+  const selectedUrl = mode === "avatar" ? avatarUpstreamUrl :
+    mode === "avatar-de" ? avatarGermanUpstreamUrl : upstreamUrl;
   if (active || !selectedUrl) {
     client.send(JSON.stringify({ type: "proxy.error", message: active ?
       "A coaching session is already connected." :
-      mode === "avatar" ? avatarError ?? "Avatar is not configured." : "Set FOUNDRY_PROJECT_ENDPOINT in .env." }));
+      mode === "avatar" ? avatarError ?? "Avatar is not configured." :
+      mode === "avatar-de" ? avatarGermanError ?? "German avatar is not configured." :
+      "Set FOUNDRY_PROJECT_ENDPOINT in .env." }));
     client.close(1008);
     return;
   }
@@ -232,10 +245,7 @@ sockets.on("connection", (client, req) => {
     try {
       const event: unknown = JSON.parse(data.toString());
       if (!event || typeof event !== "object" || !("type" in event) ||
-          typeof event.type !== "string" ||
-          !["session.update", "session.avatar.connect", "conversation.item.create",
-            "conversation.item.delete", "input_audio_buffer.append", "input_audio_buffer.clear",
-            "response.create", "response.cancel", "conversation.item.truncate"].includes(event.type)) {
+          typeof event.type !== "string" || !isAllowedVoiceClientEvent(event.type, mode)) {
         fail("Unsupported client event.");
         return;
       }

@@ -1,3 +1,5 @@
+import type { CoachLanguage } from "./coach-language.js";
+
 export type NormalizedFaceRectangle = {
   left: number;
   top: number;
@@ -105,13 +107,75 @@ export function isCoachingSettings(value: unknown): value is CoachingSettings {
 
 export type FramingCue = { key: string; text: string };
 
-export function framingCue(assessment: FaceAssessment, settings: CoachingSettings): FramingCue {
+const messages = {
+  en: {
+    noFace: "I couldn't detect a face. Make sure your face is visible and try again.",
+    under: "Your face looks underexposed; add a soft light in front of you.",
+    over: "Your face looks overexposed; soften or reduce the light on your face.",
+    unavailable: "I can't assess facial exposure in this frame. Check your lighting and try again.",
+    exposureGood: "Your facial exposure is within the configured range.",
+    exposureCategory: "Azure reports good facial exposure; the custom range could not be checked.",
+    multiple: "I found multiple faces; make sure your face is the main subject in view.",
+    blur: "Your face looks blurry; hold still and check the camera focus.",
+    yaw: "Turn a little more toward the camera.",
+    pitch: "Keep your head a little more level.",
+    roll: "Level your head slightly.",
+    right: "Move slightly right in the preview to align your face with the framing guide.",
+    left: "Move slightly left in the preview to align your face with the framing guide.",
+    down: "Move slightly down in the preview to align your face with the framing guide.",
+    up: "Move slightly up in the preview to align your face with the framing guide.",
+    closer: "Your face looks small compared with the guide. Come slightly closer to the camera.",
+    back: "Your face looks large compared with the guide. Move slightly farther from the camera.",
+    aligned: "Your face is close to the framing target.",
+    ready: "Your framing looks good. You're ready to go.",
+  },
+  de: {
+    noFace: "Ich konnte kein Gesicht erkennen. Stelle sicher, dass dein Gesicht sichtbar ist, und versuche es erneut.",
+    under: "Dein Gesicht ist unterbelichtet. Stelle eine weiche Lichtquelle vor dich.",
+    over: "Dein Gesicht ist überbelichtet. Verringere das Licht oder mache es weicher.",
+    unavailable: "Ich kann die Gesichtsbelichtung in diesem Bild nicht beurteilen. Prüfe dein Licht und versuche es erneut.",
+    exposureGood: "Die Belichtung deines Gesichts liegt im eingestellten Bereich.",
+    exposureCategory: "Azure meldet eine gute Gesichtsbelichtung; der eingestellte Bereich konnte nicht geprüft werden.",
+    multiple: "Ich habe mehrere Gesichter erkannt. Stelle sicher, dass dein Gesicht im Mittelpunkt steht.",
+    blur: "Dein Gesicht wirkt unscharf. Halte still und prüfe den Kamerafokus.",
+    yaw: "Drehe dich etwas mehr zur Kamera.",
+    pitch: "Halte deinen Kopf etwas gerader.",
+    roll: "Richte deinen Kopf etwas gerader aus.",
+    right: "Bewege dich in der Vorschau etwas nach rechts, bis dein Gesicht näher an der Markierung ist.",
+    left: "Bewege dich in der Vorschau etwas nach links, bis dein Gesicht näher an der Markierung ist.",
+    down: "Bewege dich in der Vorschau etwas nach unten, bis dein Gesicht näher an der Markierung ist.",
+    up: "Bewege dich in der Vorschau etwas nach oben, bis dein Gesicht näher an der Markierung ist.",
+    closer: "Dein Gesicht wirkt im Verhältnis zur Markierung klein. Komm etwas näher an die Kamera.",
+    back: "Dein Gesicht wirkt im Verhältnis zur Markierung groß. Geh etwas weiter von der Kamera weg.",
+    aligned: "Dein Gesicht ist nahe an der Bildausschnitt-Markierung.",
+    ready: "Dein Bildausschnitt passt. Du kannst loslegen.",
+  },
+} as const;
+
+export function exposureCue(
+  assessment: FaceAssessment, settings: CoachingSettings, language: CoachLanguage = "en",
+): FramingCue {
   if (!isFaceAssessment(assessment) || !isCoachingSettings(settings)) {
     throw new Error("Invalid face assessment or coaching settings.");
   }
-  if (!assessment.faceCount) {
-    return { key: "no-face", text: "I can't see a face. Move into the camera view." };
+  const text = messages[language];
+  if (!assessment.faceCount) return { key: "no-face", text: text.noFace };
+  const exposure = assessment.exposureValue;
+  if (typeof exposure === "number") {
+    if (exposure < settings.exposureMin) return { key: "exposure-under", text: text.under };
+    if (exposure >= settings.exposureMax) return { key: "exposure-over", text: text.over };
+    return { key: "exposure-good", text: text.exposureGood };
   }
+  if (assessment.exposureLevel === "underExposure") return { key: "exposure-under", text: text.under };
+  if (assessment.exposureLevel === "overExposure") return { key: "exposure-over", text: text.over };
+  if (assessment.exposureLevel === "goodExposure") return { key: "exposure-good", text: text.exposureCategory };
+  return { key: "exposure-unavailable", text: text.unavailable };
+}
+
+function targetFramingCue(
+  assessment: FaceAssessment, settings: CoachingSettings, language: CoachLanguage,
+): FramingCue {
+  const text = messages[language];
   if (assessment.faceCenterX === null || assessment.faceCenterY === null || assessment.faceWidthRatio === null) {
     throw new Error("Face measurements are missing.");
   }
@@ -120,17 +184,32 @@ export function framingCue(assessment: FaceAssessment, settings: CoachingSetting
   const width = assessment.faceWidthRatio / settings.headWidth;
   if (Math.abs(x) > 0.04) {
     return x < 0
-      ? { key: "right", text: "Move your face a little toward the right side of the preview." }
-      : { key: "left", text: "Move your face a little toward the left side of the preview." };
+      ? { key: "right", text: text.right }
+      : { key: "left", text: text.left };
   }
   if (Math.abs(y) > 0.05) {
     return y < 0
-      ? { key: "down", text: "Move your face a little lower in the preview." }
-      : { key: "up", text: "Move your face a little higher in the preview." };
+      ? { key: "down", text: text.down }
+      : { key: "up", text: text.up };
   }
-  if (width < 0.85) return { key: "closer", text: "Your face looks small for the guide. Move a little closer." };
-  if (width > 1.15) return { key: "back", text: "Your face looks large for the guide. Move a little farther back." };
-  return { key: "aligned", text: "Your face is close to the framing target." };
+  if (width < 0.85) return { key: "closer", text: text.closer };
+  if (width > 1.15) return { key: "back", text: text.back };
+  return { key: "aligned", text: text.aligned };
+}
+
+export function framingCue(
+  assessment: FaceAssessment, settings: CoachingSettings, language: CoachLanguage = "en",
+): FramingCue {
+  const exposure = exposureCue(assessment, settings, language);
+  if (exposure.key !== "exposure-good") return exposure;
+  const cue = targetFramingCue(assessment, settings, language);
+  if (cue.key === "aligned") {
+    const customized = applyCoachingSettings(assessment, settings, language);
+    const key = customized.feedback.length ? `setup:${customized.feedback[0]}` :
+      typeof assessment.exposureValue === "number" ? "aligned" : "aligned-unverified";
+    return { key, text: customized.spokenText };
+  }
+  return { ...cue, text: `${exposure.text} ${cue.text}` };
 }
 
 export class FramingCueGate {
@@ -140,7 +219,7 @@ export class FramingCueGate {
   shouldSpeak(cue: FramingCue, now: number): boolean {
     if (this.lastKey === undefined) return true;
     if (now - this.lastSpokenAt < 8_000) return false;
-    if (cue.key === "aligned" && cue.key === this.lastKey) return false;
+    if ((cue.key === "aligned" || cue.key === "aligned-unverified") && cue.key === this.lastKey) return false;
     return cue.key !== this.lastKey || now - this.lastSpokenAt >= 15_000;
   }
 
@@ -155,39 +234,25 @@ export class FramingCueGate {
   }
 }
 
-export function applyCoachingSettings(assessment: FaceAssessment, settings: CoachingSettings): FaceAssessment {
-  if (!isFaceAssessment(assessment) || !isCoachingSettings(settings)) {
-    throw new Error("Invalid face assessment or coaching settings.");
+export function applyCoachingSettings(
+  assessment: FaceAssessment, settings: CoachingSettings, language: CoachLanguage = "en",
+): FaceAssessment {
+  const exposure = exposureCue(assessment, settings, language);
+  if (exposure.key !== "exposure-good") {
+    return { ...assessment, feedback: [exposure.text], spokenText: exposure.text };
   }
-  if (!assessment.faceCount) return assessment;
+  const text = messages[language];
+  const framing = targetFramingCue(assessment, settings, language);
   const feedback: string[] = [];
-  if (assessment.faceCount > 1) feedback.push("I found multiple faces; make sure your face is the main subject in view.");
-  const exposure = assessment.exposureValue;
-  if (typeof exposure === "number") {
-    if (exposure < settings.exposureMin) feedback.push("Your face looks underexposed; add a soft light in front of you.");
-    if (exposure >= settings.exposureMax) feedback.push("Your face looks overexposed; soften or reduce the light on your face.");
-  } else {
-    if (assessment.exposureLevel === "underExposure") feedback.push("Your face looks underexposed; add a soft light in front of you.");
-    if (assessment.exposureLevel === "overExposure") feedback.push("Your face looks overexposed; soften or reduce the light on your face.");
-  }
-  if (assessment.blurLevel === "high") feedback.push("Your face looks blurry; hold still and check the camera focus.");
-  if (assessment.yawDegrees !== null && Math.abs(assessment.yawDegrees) > 18) feedback.push("Turn a little more toward the camera.");
-  if (assessment.pitchDegrees !== null && Math.abs(assessment.pitchDegrees) > 20) feedback.push("Keep your head a little more level.");
-  if (assessment.rollDegrees !== null && Math.abs(assessment.rollDegrees) > 12) feedback.push("Level your head slightly.");
-  if (assessment.faceWidthRatio !== null && assessment.faceWidthRatio < settings.headWidth * 0.55) {
-    feedback.push("Your face appears small in frame; move a little closer or zoom in.");
-  }
-  if (assessment.faceWidthRatio !== null && assessment.faceWidthRatio > settings.headWidth * 1.45) {
-    feedback.push("Your face fills much of the frame; move the camera back a little.");
-  }
-  if (assessment.faceCenterX !== null && assessment.faceCenterY !== null &&
-      (Math.abs((1 - assessment.faceCenterX) - settings.headX) > 0.12 ||
-       Math.abs(assessment.faceCenterY - settings.headY) > 0.15)) {
-    feedback.push("Adjust the camera or your position to bring your face nearer the guide.");
-  }
+  if (assessment.faceCount > 1) feedback.push(text.multiple);
+  if (framing.key !== "aligned") feedback.push(framing.text);
+  if (assessment.blurLevel === "high") feedback.push(text.blur);
+  if (assessment.yawDegrees !== null && Math.abs(assessment.yawDegrees) > 18) feedback.push(text.yaw);
+  if (assessment.pitchDegrees !== null && Math.abs(assessment.pitchDegrees) > 20) feedback.push(text.pitch);
+  if (assessment.rollDegrees !== null && Math.abs(assessment.rollDegrees) > 12) feedback.push(text.roll);
   const selected = feedback.slice(0, 2);
-  const spokenText = selected.length ? selected.join(" ") :
-    "No correction was flagged among the available face measurements in this frame.";
+  const aligned = typeof assessment.exposureValue === "number" ? text.ready : text.aligned;
+  const spokenText = `${exposure.text} ${selected.length ? selected.join(" ") : aligned}`;
   return { ...assessment, feedback: selected, spokenText };
 }
 

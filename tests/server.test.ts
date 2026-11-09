@@ -18,6 +18,7 @@ async function startServer(overrides: NodeJS.ProcessEnv = {}) {
     env: {
       ...process.env, PORT: String(port), FOUNDRY_PROJECT_ENDPOINT: "",
       FOUNDRY_VOICE_AGENT_NAME: "video-quality-coach", FOUNDRY_AVATAR_AGENT_NAME: "",
+      FOUNDRY_AVATAR_DE_AGENT_NAME: "",
       AZURE_FACE_ENDPOINT: "", ...overrides,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -77,7 +78,8 @@ test("local server serves the browser modules and strictly restricts voice upgra
     assert.equal(config.status, 200);
     const settings = await config.json() as {
       configured: boolean; faceConfigured: boolean; faceOutlineSupported: boolean; faceExposureSupported: boolean;
-      avatarConfigured: boolean; avatarError: string;
+      avatarConfigured: boolean; avatarError: string; avatarGermanConfigured: boolean; avatarGermanError: string;
+      avatarVoiceLanguageRoutingSupported: boolean; avatarInterruptionSupported: boolean;
     };
     assert.equal(settings.configured, false);
     assert.equal(settings.faceConfigured, false);
@@ -85,6 +87,10 @@ test("local server serves the browser modules and strictly restricts voice upgra
     assert.equal(settings.faceExposureSupported, true);
     assert.equal(settings.avatarConfigured, false);
     assert.match(settings.avatarError, /FOUNDRY_AVATAR_AGENT_NAME/);
+    assert.equal(settings.avatarGermanConfigured, false);
+    assert.match(settings.avatarGermanError, /FOUNDRY_AVATAR_DE_AGENT_NAME/);
+    assert.equal(settings.avatarVoiceLanguageRoutingSupported, true);
+    assert.equal(settings.avatarInterruptionSupported, true);
     assert.equal((await fetch(origin + "/")).status, 200);
     for (const path of ["/client/main.js", "/client/audio.js", "/shared/protocol.js", "/capture-worklet.js"]) {
       const response = await fetch(origin + path);
@@ -111,16 +117,39 @@ test("local server serves the browser modules and strictly restricts voice upgra
       ...faceRequest, headers: { ...faceRequest.headers, Origin: "https://evil.test" },
     });
     assert.equal(crossOriginFace.status, 403);
-    for (const path of ["/voice", "/voice?mode=avatar"]) {
+    for (const path of ["/voice", "/voice?mode=avatar", "/voice?mode=avatar&language=de"]) {
       await rejectsUpgrade(origin, path, "https://evil.test");
     }
-    for (const path of ["/voice?agent=other", "/voice?mode=voice", "/voice?mode=avatar&agent=other"]) {
+    for (const path of ["/voice?agent=other", "/voice?mode=voice", "/voice?mode=avatar&agent=other",
+      "/voice?mode=avatar&language=de&agent=other", "/voice?mode=avatar&language=en"]) {
       await rejectsUpgrade(origin, path, origin);
     }
     assert.match(await proxyError(origin, "/voice"), /FOUNDRY_PROJECT_ENDPOINT/);
     assert.match(await proxyError(origin, "/voice?mode=avatar"), /FOUNDRY_AVATAR_AGENT_NAME/);
+    assert.match(await proxyError(origin, "/voice?mode=avatar&language=de"), /FOUNDRY_AVATAR_DE_AGENT_NAME/);
   } finally {
     await stopServer(child);
+  }
+});
+
+test("German avatar routing requires a distinct configured agent and does not change English availability", async () => {
+  const endpoint = "https://example.services.ai.azure.com/api/projects/demo";
+  for (const [german, expected] of [["german-avatar", true], ["avatar-agent", false], ["voice-agent", false], ["", false]] as const) {
+    const { child, origin } = await startServer({
+      FOUNDRY_PROJECT_ENDPOINT: endpoint, FOUNDRY_VOICE_AGENT_NAME: "voice-agent",
+      FOUNDRY_AVATAR_AGENT_NAME: "avatar-agent", FOUNDRY_AVATAR_DE_AGENT_NAME: german,
+    });
+    try {
+      const settings = await (await fetch(origin + "/api/config")).json() as {
+        avatarConfigured: boolean; avatarGermanConfigured: boolean; avatarGermanError?: string;
+      };
+      assert.equal(settings.avatarConfigured, true);
+      assert.equal(settings.avatarGermanConfigured, expected);
+      if (!expected) {
+        assert.match(settings.avatarGermanError ?? "", /FOUNDRY_AVATAR_DE_AGENT_NAME/);
+        assert.match(await proxyError(origin, "/voice?mode=avatar&language=de"), /FOUNDRY_AVATAR_DE_AGENT_NAME/);
+      }
+    } finally { await stopServer(child); }
   }
 });
 

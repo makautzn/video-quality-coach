@@ -6,17 +6,26 @@ Voice Agent with Azure Face Detect; an optional talking avatar delivers the same
 feedback. Recordings stay in the browser until downloaded.
 
 > **Prototype status:** Face-backed coaching, voice controls, continuous
-> sampling, and an Adrian/Andrew avatar are implemented. Synthetic browser
-> and WebRTC checks have exercised the integration, but real-device speech,
-> playback, coaching accuracy, and user acceptance still require validation.
-> This is not a production or multi-user server.
+> sampling, and Leonie Casual (VASA-2 preview) avatars are implemented.
+> Synthetic browser checks exercised voice-only and avatar sessions, audio/video
+> delivery, and the setup-check tool. Real-device speech, voice quality,
+> coaching accuracy, and user acceptance still require validation. This is not
+> a production or multi-user server.
 
 ## What it does
 
 - Preview a mirrored camera feed with adjustable head and eye-line guides.
 - Check a snapshot manually or opt in to continuous checks approximately
-  every 3.5 seconds. The coach gives brief directions relative to the preview
-  and spaces out repeated speech.
+  every 3.5 seconds. Each snapshot checks facial exposure first; framing
+  guidance follows only when exposure is acceptable. The coach gives
+  measurement-based directions to move in the preview or adjust distance, and
+  spaces out repeated speech.
+- Hear a brief introduction when the voice coach or avatar connects. The coach
+  confirms you are ready when measured exposure is within your configured range,
+  framing matches the guide, and no other detected issue needs correction.
+  Continuous coaching waits for the introduction to finish and does not repeat
+  the ready confirmation while you remain aligned. If welcome playback cannot
+  be verified, automatic checks turn off and the app reports an error.
 - Use voice commands such as “check my setup”, “enable automatic checks”,
   “show the face box”, “start recording”, or “set the eye line to 35 percent”.
 - Optionally show the face rectangle from the latest checked snapshot, and
@@ -24,48 +33,140 @@ feedback. Recordings stay in the browser until downloaded.
 - Record, replay, and download a local camera and microphone take. The avatar
   is not included in the recording.
 
-The coach is instructed to speak English (US) and repeat approved feedback
+Choose English (US) or German for the coach in **Coach instructions**. The
+included definitions use the female voice `en-US-Ava:DragonHDLatestNeural` for
+English and `de-DE-Seraphina:DragonHDLatestNeural` for German. Both avatar
+agents use the Leonie casual photo avatar on the preview-only VASA-2 model. The
+coach is instructed to speak the selected language and repeat approved feedback
 verbatim; model instructions are not a guarantee of speech behavior. The
 microphone starts after connecting and browser permission is granted. Once it
 is muted, or the coach is disconnected, use the UI to resume listening.
 
-## Prerequisites
+## Azure services
 
-- Node.js 22.18 or later and npm.
-- A modern browser with camera and microphone support.
-- Azure CLI, signed in with access to the intended subscription.
-- A Microsoft Foundry project with a deployed Voice Agent. Its realtime voice
-  endpoint and configured voice must be available to the signed-in identity.
-- An Azure Face resource with Face Detect enabled and a suitable data-plane
-  role for the signed-in identity, such as **Cognitive Services Face
-  Recognizer**. An endpoint alone does not prove Face Detect is available.
-- For avatar mode, a separate avatar-enabled Voice Agent with a saved avatar
-  preset and a working WebRTC connection. Voice-only mode does not require it.
+| Service | How Frame uses it |
+|---|---|
+| **Microsoft Foundry project and Agent Service** | Hosts the managed Voice Agent, its `gpt-realtime` conversation model, voice sessions, and tool calls. The managed model does not need a separate model deployment in your project. |
+| **Azure Face** | Face Detect processes each consented JPEG snapshot and returns face position, head pose, blur, and facial exposure measurements. The app does not request face IDs or recognition. |
+| **Azure Speech voices and optional avatar** | The Foundry Voice Agents use Azure neural voices. Optional Leonie avatar agents stream synchronized video and audio to the browser over WebRTC. The app does not configure a separate Speech endpoint or key. |
+| **Microsoft Entra ID and Azure CLI** | The local proxy uses the signed-in Azure CLI identity to obtain tokens for Foundry and Face; it does not put Azure credentials in the browser. |
 
-Azure voice, Face requests, and avatar usage can incur charges. Service and
-avatar availability depend on the subscription and region.
+The web server and recordings run locally. This repository does not provision
+an application host, database, or storage account. Foundry may use its own
+platform-managed resources. Voice, Face, and avatar usage can incur charges;
+availability and quotas depend on your subscription and region.
 
-## Run locally
+## Deploy and run from a fresh clone
+
+These steps use an **existing** Foundry project and a separate Face resource.
+They deploy the managed Voice Agent definitions in `azure.yaml`; they do not
+create the Foundry project or Face resource. Voice-only mode is the simplest
+starting point. Avatar deployment is optional.
+
+### 1. Prerequisites and Azure resources
+
+- Install Node.js 22.18 or later, npm, [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli),
+  and [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd).
+  Use a modern browser with a camera and microphone.
+- Create or use a [Microsoft Foundry project](https://learn.microsoft.com/azure/foundry/how-to/create-projects)
+  with access to managed Voice Agents and `gpt-realtime`. Your identity needs
+  **Foundry User** on the project or equivalent agent create/update and use
+  permissions. Record its project endpoint and full Azure resource ID from
+  the Foundry/Azure portal.
+- Create or use an [Azure Face resource](https://portal.azure.com/#create/Microsoft.CognitiveServicesFace).
+  Record its resource endpoint and grant your signed-in identity a suitable
+  data-plane role, such as **Cognitive Services Face Recognizer**. Verify that
+  Face Detect and the requested attributes are available to your subscription;
+  an endpoint alone does not prove access.
+- For Leonie, use a project and subscription with access to the VASA-2 avatar
+  preview and a browser/network that supports WebRTC. Voice-only mode does not
+  require avatar access. Preview availability is regional and can change.
+
+The following examples use PowerShell. Replace every placeholder with your own
+values. Run interactive sign-in commands yourself.
+
+### 2. Clone and bind the project
 
 ```powershell
 git clone https://github.com/makautzn/video-quality-coach.git
 Set-Location video-quality-coach
 npm ci
-Copy-Item .env.example .env
-# Edit .env with your own Azure resources, then sign in if needed:
-az login
+
+az login --tenant "<tenant-id>"
+az account set --subscription "<subscription-id>"
+azd auth login --tenant-id "<tenant-id>"
+azd extension install microsoft.foundry
+azd extension install azure.ai.projects
+azd extension install azure.ai.agents
+
+azd env new video-coach-dev
+azd env set AZURE_SUBSCRIPTION_ID "<subscription-id>"
+azd env set AZURE_TENANT_ID "<tenant-id>"
+azd env set AZURE_AI_PROJECT_ID "<full-project-resource-id>"
+azd env set AZURE_AI_PROJECT_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>"
+```
+
+The `azd` environment is local to this checkout and is excluded from Git.
+Use the **same project** for the endpoint and resource ID. Azure CLI and
+`azd` maintain separate sign-ins; both identities must have access to the
+selected subscription and project. The manifest resolves the project endpoint
+from the selected `azd` environment instead of targeting the author's project.
+
+### 3. Deploy the voice agent
+
+```powershell
+# Required by azd versions where Voice Agent support is still in preview.
+$env:AZD_ALPHA_ENABLE_AGENTS_VOICE = "true"
+# Preview should say that the existing Foundry project needs no provisioning.
+azd provision --preview --no-prompt
+azd deploy video-quality-coach --no-prompt
+```
+
+This creates an agent version and can incur Azure charges. It does not deploy
+the local web app. If you already have a compatible Voice Agent, you can skip
+deployment and configure its name instead. The app sends its own instructions,
+tools, language, and approved feedback when a session starts.
+
+For the optional Leonie avatar, deploy the language-specific agents you need:
+
+```powershell
+azd deploy video-coach-avatar-check-abc06568 --no-prompt  # English
+azd deploy video-coach-avatar-de-abc06568 --no-prompt     # German
+```
+
+The suffixes are historical agent names, not values tied to a subscription.
+They are retained so existing deployments can be updated rather than silently
+creating new agents. The app requires separate agent names for voice-only,
+English avatar, and German avatar modes. Deploying a new version can update an
+existing agent with the same name in your chosen project.
+
+### 4. Configure and start the local app
+
+Copy the example only if `.env` does not already exist:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+# Edit .env using the settings below, then:
 npm run dev
 ```
 
-Do not overwrite an existing `.env`. Open **http://127.0.0.1:5173**; use the
-exact loopback address rather than `localhost`, because the proxy validates
-the origin. `npm run dev` builds the TypeScript and starts the server.
+Set `FOUNDRY_PROJECT_ENDPOINT` to the same project endpoint used above,
+`FOUNDRY_VOICE_AGENT_NAME` to `video-quality-coach`, and
+`AZURE_FACE_ENDPOINT` to your Face resource endpoint. Set the optional avatar
+agent names to the deployed service names above, or leave them blank. These app
+settings are separate from the `azd` environment. Do not overwrite an existing
+`.env` or commit it.
+
+Open **http://127.0.0.1:5173**; use the exact loopback address rather than
+`localhost`, because the proxy validates the origin. `npm run dev` builds the
+TypeScript and starts the server. If `PORT` is changed, use that port in the URL.
 
 | `.env` setting | Purpose |
 |---|---|
 | `FOUNDRY_PROJECT_ENDPOINT` | Project endpoint, e.g. `https://<account>.services.ai.azure.com/api/projects/<project>`. |
 | `FOUNDRY_VOICE_AGENT_NAME` | Name of the deployed voice-only agent. |
-| `FOUNDRY_AVATAR_AGENT_NAME` | Optional name of a **different**, avatar-enabled agent; leave blank to disable avatar mode. |
+| `FOUNDRY_AVATAR_AGENT_NAME` | Optional name of a **different**, English Leonie/avatar-enabled agent; leave blank to disable the English avatar. |
+| `FOUNDRY_AVATAR_DE_AGENT_NAME` | Optional name of a separate Leonie/avatar-enabled agent configured with a German voice. Required for the German avatar. |
 | `AZURE_SUBSCRIPTION_ID` | Subscription to use for Azure CLI credential requests; leave blank to use the CLI's selected subscription. |
 | `AZURE_FACE_ENDPOINT` | HTTPS root endpoint of the Face resource, e.g. `https://<resource>.cognitiveservices.azure.com/`. |
 | `PORT` | Local server port; defaults to `5173`. |
@@ -76,14 +177,14 @@ through `AzureCliCredential`; a configured endpoint does not itself verify
 access. Local camera preview and recording can work without Azure; connecting
 the coach and checking a frame require the corresponding resources.
 
-`azure.yaml` contains the prototype's managed Voice Agent definitions,
-including the separate avatar preset. It is a deployment template, not proof
-that agents exist in a new project. Bind Azure Developer CLI to your own
-project and deploy the intended service before using it. Local application
-changes do not automatically redeploy an agent. The app supplies its own
-grounded instructions when a voice session starts. See the
-[Foundry Voice Agent documentation](https://learn.microsoft.com/azure/foundry/agents/how-to/configure-voice-agent)
-for current deployment and availability requirements.
+Local changes to `azure.yaml` do not automatically redeploy an agent. To verify
+your setup, connect in voice-only mode, allow the browser permissions, and run a
+setup check. Try each deployed avatar language separately. If a service rejects
+access, verify the project and Face endpoints, selected subscription, roles,
+regional availability, and any required limited-access approval. For avatar
+connection failures, also check WebRTC connectivity and the saved agent preset.
+See the [Foundry Voice Agent documentation](https://learn.microsoft.com/azure/foundry/agents/how-to/configure-voice-agent)
+for current requirements.
 
 ## Using the coach
 
@@ -91,20 +192,54 @@ for current deployment and availability requirements.
 2. Select the avatar if desired, grant consent for Azure processing, and connect.
    Allow microphone access when the browser asks.
 3. Say “check my setup” or use **Check my setup** for a snapshot. To keep
-   checking, enable **Continuous framing coach** or ask the coach to enable
+   checking, enable **Continuous setup coach** or ask the coach to enable
    automatic checks.
 4. Optionally show the face box. It reflects the latest checked snapshot, not
    live tracking, and is not included in the recording.
 5. Record a take, stop it, and download it before refreshing or closing the
    page. A completed take is held in browser memory, not automatically saved.
 
+Open **Coach instructions** to select English or German and edit the session
+instructions. Choose **Apply language & instructions** to save both in this
+browser and, when connected, update the current voice session. Switching
+languages replaces the built-in default with the corresponding translated
+default; custom text is preserved. Restoring the default fills the editor for
+the selected language; choose Apply to use it. A voice-only session updates its
+voice in place. Switching language during an avatar session reconnects to the
+agent configured for that language; the local camera and recording continue,
+and the prior microphone mute state is preserved. Changes are scoped to this
+page's origin and do not modify the deployed agent.
+
+The app adds language and grounding instructions around the editable text.
+Manual, voice-triggered, and automatic checks generate approved feedback in
+the selected language and ask the coach to repeat it exactly. The rules first
+evaluate facial exposure on the current snapshot; underexposure, overexposure,
+missing exposure, or no face blocks position guidance until a later snapshot
+has acceptable exposure. The same applies if the light worsens again. Once
+exposure is acceptable, checks compare the face center and width with the
+configured guide. If the face is outside the target, the coach gives specific
+left, right, up, down, closer, or farther guidance. Left and right refer to the
+mirrored preview. Face-width comparison is an approximate framing cue, not a
+physical distance measurement. Manual
+and voice-triggered checks can also report a separate blur or pose issue. If
+Azure supplies only an exposure category, the app uses that category and
+states that custom thresholds could not be checked. Language and grounding
+instructions are model guidance, not a guarantee of voice behavior; pronunciation
+and recognition quality should be checked on the actual device in both languages.
+
+When you start speaking or request another response in avatar mode, the app
+clears queued avatar speech so an earlier response does not continue over the
+next one. Automatic checks wait for the welcome; avatar playback completion is
+estimated from audio silence, so an unusually long pause can be mistaken for
+the end of speech. Headphones help prevent speaker audio from being picked up by the
+microphone; browser echo cancellation is not guaranteed. Disconnect any other
+active app or Foundry Playground voice sessions to avoid competing coaches.
+
 Automatic checks run only while the tab is visible, the camera is running,
 consent is enabled, and the coach is connected. Checks do not overlap; service
-latency can make the interval longer. The Face free tier permits 20 requests
-per minute and 30,000 per month across the resource. At a sustained 3.5-second
-interval, the app can consume about 1,029 requests per hour; other applications
-and manual checks share the quota. A one-second interval would exceed the free
-tier's rate limit. See [Face pricing](https://azure.microsoft.com/pricing/details/cognitive-services/face-api/)
+latency can make the interval longer. At a sustained 3.5-second interval, the
+app can consume about 1,029 requests per hour; other applications and manual
+checks share the resource's quota. See [Face pricing](https://azure.microsoft.com/pricing/details/cognitive-services/face-api/)
 for current quotas and pricing.
 
 The face box clears when a check fails or finds no face, the session or camera

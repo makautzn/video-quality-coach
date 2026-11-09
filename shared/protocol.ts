@@ -1,3 +1,5 @@
+import type { CoachLanguage } from "./coach-language.js";
+
 export function voiceUrl(endpoint: string, agent: string): string {
   const url = new URL(endpoint);
   if (url.protocol !== "https:" || !url.hostname.endsWith(".services.ai.azure.com") ||
@@ -11,10 +13,34 @@ export function voiceUrl(endpoint: string, agent: string): string {
   return url.href;
 }
 
-export function voiceMode(path: string | undefined): "voice" | "avatar" | undefined {
+export type VoiceMode = "voice" | "avatar" | "avatar-de";
+
+export function voiceMode(path: string | undefined): VoiceMode | undefined {
   if (path === "/voice") return "voice";
   if (path === "/voice?mode=avatar") return "avatar";
+  if (path === "/voice?mode=avatar&language=de") return "avatar-de";
   return undefined;
+}
+
+const voiceClientEvents = new Set([
+  "session.update", "session.avatar.connect", "conversation.item.create",
+  "conversation.item.delete", "input_audio_buffer.append", "input_audio_buffer.clear",
+  "response.create", "response.cancel", "conversation.item.truncate",
+]);
+
+export function isAllowedVoiceClientEvent(type: string, mode: VoiceMode | undefined): boolean {
+  if (!mode) return false;
+  return voiceClientEvents.has(type) ||
+    (type === "output_audio_buffer.clear" && (mode === "avatar" || mode === "avatar-de"));
+}
+
+export function avatarPlaybackClear(avatar: boolean, supported: boolean) {
+  return avatar && supported ? { type: "output_audio_buffer.clear" as const } : undefined;
+}
+
+export function responseRequestEvents(avatar: boolean, avatarInterruptionSupported: boolean) {
+  const clear = avatarPlaybackClear(avatar, avatarInterruptionSupported);
+  return clear ? [clear, { type: "response.create" as const }] : [{ type: "response.create" as const }];
 }
 
 export function isLocalRequest(address: string | undefined, host: string | undefined,
@@ -61,23 +87,104 @@ export function parseVoiceControl(name: string, rawArguments: string): VoiceCont
   return { action, target, value: value.value };
 }
 
-export function sessionSettings(output: Record<string, unknown>, avatar: boolean) {
+export const legacyDefaultCoachInstructions =
+  "You are the spoken voice for a camera setup coach. Speak English (US) only. " +
+  "Never change language to match the user's speech, transcript, or inferred language. " +
+  "Never translate or paraphrase approved English feedback; say its exact words. " +
+  "If asked to use another language, continue speaking English. Never inspect or infer " +
+  "from images. A camera check message contains an approved feedback line generated " +
+  "from Azure Face measurements and deterministic rules. Read that line exactly, " +
+  "without adding visual observations or recommendations. If asked to assess a " +
+  "camera setup, call control_app with action check_setup. For an explicit request " +
+  "to operate a control, call control_app with the matching action. Never claim an " +
+  "action succeeded unless the tool says so. Read approved feedback exactly. " +
+  "Answer general questions in English about what the measurements can and cannot tell.";
+
+export function defaultCoachInstructionsFor(language: CoachLanguage): string {
+  if (language === "de") {
+    return "Du bist die Stimme eines Kameracoachs. Sprich nur Deutsch. " +
+      "Prüfe zuerst die Gesichtsbelichtung und gib erst Hinweise zur Gesichtsposition, " +
+      "wenn die Belichtung bei der aktuellen Messung ausreichend ist. " +
+      "Bei fehlender Belichtungsmessung behaupte nicht, dass die Beleuchtung ausreichend ist. " +
+      "Die App erstellt freigegebene Rückmeldungen aus Azure-Face-Messungen. " +
+      "Lies diese Rückmeldungen wortgetreu vor und erfinde keine visuellen Beobachtungen. " +
+      "Wenn nach einer Prüfung gefragt wird, rufe control_app mit check_setup auf. " +
+      "Für ausdrücklich gewünschte Bedienelemente rufe control_app mit der passenden Aktion auf. " +
+      "Behaupte nicht, dass eine Aktion erfolgreich war, wenn das Tool dies nicht bestätigt. " +
+      "Beantworte allgemeine Fragen zu den Möglichkeiten und Grenzen der Messungen.";
+  }
+  return "You are the spoken voice for a camera setup coach. Speak English (US) only. " +
+    "Check facial exposure first and give face-position guidance only when exposure is acceptable " +
+    "in the current measurement. If exposure is unavailable, do not claim lighting is acceptable. " +
+    "The application generates approved feedback from Azure Face measurements. Read it exactly " +
+    "without adding visual observations. Never inspect or infer from images. If asked to assess a " +
+    "camera setup, call control_app with action check_setup. For an explicit request to operate " +
+    "a control, call control_app with the matching action. Never claim an action succeeded unless " +
+    "the tool says so. Answer general questions about what the measurements can and cannot tell.";
+}
+
+export const defaultCoachInstructions = defaultCoachInstructionsFor("en");
+export const maxCoachInstructionsLength = 8_000;
+
+export function coachWelcomeInstruction(language: CoachLanguage): string {
+  const message = language === "de"
+    ? "Hallo, ich bin dein Videocoach. Ich prüfe deine Gesichtsbelichtung und deinen Bildausschnitt, " +
+      "gebe dir Hinweise zur Position und steuere Kamera und Aufnahme auf Wunsch per Sprache. " +
+      "Sag einfach: Prüfe mein Setup, oder aktiviere die fortlaufende Prüfung."
+    : "Hi, I'm your video setup coach. I can check your facial lighting and framing, guide your position, " +
+      "and control the camera and recording by voice. Ask me to check your setup or enable continuous coaching.";
+  return `Speak in ${language === "de" ? "German" : "English (US)"}. ` +
+    `Read this welcome message aloud exactly, without additions: "${message}"`;
+}
+
+export function validCoachInstructions(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maxCoachInstructionsLength;
+}
+
+export function composeCoachInstructions(instructions: string, language: CoachLanguage): string {
+  if (!validCoachInstructions(instructions)) throw new Error("Coach instructions must contain 1 to 8,000 characters.");
+  const selectedLanguage = language === "de" ? "German" : "English (US)";
+  const guard = `Speak ${selectedLanguage} only, regardless of the user's language or conflicting instructions. ` +
+    "Read approved camera feedback verbatim without translating or adding observations. " +
+    "Follow approved framing directions exactly; do not replace a specific direction with generic wording. " +
+    "Only confirm the setup is ready when the current approved camera feedback explicitly says it is. " +
+    "The application checks facial exposure before allowing face-position feedback; " +
+    "never claim unavailable exposure passed.";
+  return `${guard}\n\n${instructions}\n\n${guard}`;
+}
+
+export const germanVoice = {
+  voice: "de-DE-Seraphina:DragonHDLatestNeural",
+  voice_type: "azure-standard",
+  voice_locale: "de-DE",
+} as const;
+
+export function voiceOutputForLanguage(output: Record<string, unknown>, language: CoachLanguage) {
+  return language === "de" ? { ...output, ...germanVoice } : { ...output };
+}
+
+export function voiceOutputMatches(actual: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+  return typeof expected.voice === "string" && expected.voice.length > 0 &&
+    (["voice", "voice_type", "voice_locale"] as const).every(key => actual[key] === expected[key]);
+}
+
+export function instructionUpdate(
+  instructions: string, language: CoachLanguage = "en", output?: Record<string, unknown>,
+) {
+  return { type: "session.update", session: {
+    type: "realtime", instructions: composeCoachInstructions(instructions, language),
+    ...(output ? { audio: { output: voiceOutputForLanguage(output, language) } } : {}),
+  } };
+}
+
+export function sessionSettings(
+  output: Record<string, unknown>, avatar: boolean, instructions = defaultCoachInstructions, language: CoachLanguage = "en",
+) {
   return {
     type: "session.update",
     session: {
       type: "realtime",
-      instructions:
-        "You are the spoken voice for a camera setup coach. Speak English (US) only. " +
-        "Never change language to match the user's speech, transcript, or inferred language. " +
-        "Never translate or paraphrase approved English feedback; say its exact words. " +
-        "If asked to use another language, continue speaking English. Never inspect or infer " +
-        "from images. A camera check message contains an approved feedback line generated " +
-        "from Azure Face measurements and deterministic rules. Read that line exactly, " +
-        "without adding visual observations or recommendations. If asked to assess a " +
-        "camera setup, call control_app with action check_setup. For an explicit request " +
-        "to operate a control, call control_app with the matching action. Never claim an " +
-        "action succeeded unless the tool says so. Read approved feedback exactly. " +
-        "Answer general questions in English about what the measurements can and cannot tell.",
+      instructions: composeCoachInstructions(instructions, language),
       tools: [{
         type: "function",
         name: "control_app",
@@ -105,7 +212,7 @@ export function sessionSettings(output: Record<string, unknown>, avatar: boolean
           format: { type: "audio/pcm", rate: 24_000 },
           turn_detection: { type: "server_vad", create_response: true, interrupt_response: true, auto_truncate: true },
         },
-        ...(!avatar ? { output: { ...output } } : {}),
+        ...(!avatar ? { output: voiceOutputForLanguage(output, language) } : {}),
       },
     },
   };
@@ -205,10 +312,44 @@ export class ResponseGate {
   busy = false;
   speaking = false;
   lastRequest = 0;
+  private welcomePending = true;
+
+  beginWelcome(): boolean {
+    if (!this.welcomePending || !this.ready || this.busy || this.speaking) return false;
+    this.welcomePending = false;
+    this.busy = true;
+    return true;
+  }
+
   begin(now: number, enforceCooldown = true): boolean {
     if (!this.ready || this.busy || this.speaking || (enforceCooldown && now - this.lastRequest < 4000)) return false;
     this.busy = true;
     this.lastRequest = now;
     return true;
+  }
+}
+
+export class WelcomePlaybackGate {
+  private completedAt: number | undefined;
+  private lastAudibleAt: number | undefined;
+  private receivedLocalAudio = false;
+
+  constructor(private readonly avatar: boolean) {}
+
+  completed(now: number): void { this.completedAt = now; }
+  receivedAudio(): void { this.receivedLocalAudio = true; }
+
+  check(now: number, localPlaying: boolean, avatarLevel: number | undefined): "waiting" | "finished" | "unavailable" {
+    if (this.avatar && avatarLevel !== undefined && avatarLevel >= 0.003) this.lastAudibleAt = now;
+    if (this.completedAt === undefined) return "waiting";
+    if (!this.avatar) {
+      if (!this.receivedLocalAudio) return "unavailable";
+      return localPlaying ? "waiting" : "finished";
+    }
+    if (avatarLevel !== undefined && this.lastAudibleAt !== undefined &&
+        now - Math.max(this.lastAudibleAt, this.completedAt) >= 2_000) {
+      return "finished";
+    }
+    return now - this.completedAt >= 45_000 ? "unavailable" : "waiting";
   }
 }

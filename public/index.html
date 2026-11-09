@@ -45,10 +45,20 @@
         <audio id="avatar-audio" autoplay></audio>
         <div class="settings">
           <label><input id="consent" type="checkbox"> I agree to send camera snapshots to Azure Face and microphone audio to the Foundry voice coach when connected.</label>
-          <label><input id="avatar-enabled" type="checkbox" disabled> Try a talking avatar <span id="avatar-hint" class="hint">Checking avatar configuration…</span></label>
-          <label><input id="auto-coach" type="checkbox"> Continuous framing coach <span class="hint">About every 3.5 seconds while connected and sharing; sends snapshots to Azure Face.</span></label>
+          <label><input id="avatar-enabled" type="checkbox" disabled> Try Leonie, the talking avatar <span id="avatar-hint" class="hint">Checking avatar configuration…</span></label>
+          <label><input id="auto-coach" type="checkbox"> Continuous setup coach <span class="hint">About every 3.5 seconds while connected and sharing; checks facial exposure before framing.</span></label>
           <p class="privacy">The full video stays in this browser. A snapshot is sent to Azure Face for measurements, then only the resulting feedback is sent to the Foundry voice coach. Azure retention policies still apply.</p>
         </div>
+        <details class="instruction-panel">
+          <summary>Coach instructions</summary>
+          <p>Choose the coach language and edit the instructions to experiment. Apply changes to use them. German uses a German voice; changing an active avatar's language reconnects the coach without stopping a recording. The app adds language and grounding rules, and checks facial exposure before framing.</p>
+          <label for="coach-language">Coach language</label>
+          <select id="coach-language"><option value="en">English</option><option value="de">Deutsch</option></select>
+          <label for="coach-instructions">Session instructions</label>
+          <textarea id="coach-instructions" rows="9" maxlength="8000" spellcheck="true" aria-describedby="instruction-status"></textarea>
+          <div class="instruction-controls"><button id="apply-instructions" type="button">Apply language &amp; instructions</button><button id="reset-instructions" type="button" class="secondary">Restore default</button></div>
+          <p id="instruction-status" role="status" aria-live="polite"></p>
+        </details>
         <div class="coach-controls"><button id="connect" disabled>Connect coach</button><button id="disconnect" class="secondary" disabled>Disconnect</button><button id="assess" class="secondary" disabled>Check my setup</button><button id="microphone" class="secondary" disabled>Enable microphone</button></div>
         <p id="status" role="status">Start with your camera. Connect the coach when you're ready to share.</p>
         <div id="transcript" aria-live="polite" aria-label="Coaching transcript"><p class="empty">Your coaching notes will appear here.</p></div>

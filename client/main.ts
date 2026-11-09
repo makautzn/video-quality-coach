@@ -3,8 +3,13 @@ import {
   applyCoachingSettings, defaultCoachingSettings, framingCue, FramingCueGate, isCoachingSettings, isFaceAssessment,
 } from "../shared/face-assessment.js";
 import type { CoachingSettings, FaceAssessment } from "../shared/face-assessment.js";
+import { isCoachLanguage } from "../shared/coach-language.js";
+import type { CoachLanguage } from "../shared/coach-language.js";
 import {
-  avatarIceServers, decodeAvatarAnswer, encodeAvatarOffer, parseVoiceControl, ResponseGate, sessionSettings, waitForAvatarIce,
+  avatarIceServers, avatarPlaybackClear, coachWelcomeInstruction, composeCoachInstructions, decodeAvatarAnswer,
+  defaultCoachInstructions, defaultCoachInstructionsFor, encodeAvatarOffer, germanVoice, instructionUpdate,
+  legacyDefaultCoachInstructions, parseVoiceControl, responseRequestEvents, ResponseGate, sessionSettings,
+  validCoachInstructions, waitForAvatarIce, voiceOutputForLanguage, voiceOutputMatches, WelcomePlaybackGate,
 } from "../shared/protocol.js";
 
 function element<T extends Element>(id: string, type: { new(): T }): T {
@@ -27,6 +32,9 @@ const status = element("status", HTMLElement);
 const consent = checkbox("consent");
 const avatarEnabled = checkbox("avatar-enabled");
 const autoCoach = checkbox("auto-coach");
+const languageSelector = element("coach-language", HTMLSelectElement);
+const instructionsEditor = element("coach-instructions", HTMLTextAreaElement);
+const instructionStatus = element("instruction-status", HTMLElement);
 const transcript = element("transcript", HTMLElement);
 const audio = new AudioIO();
 let gate = new ResponseGate();
@@ -54,6 +62,10 @@ let faceCheck: AbortController | undefined;
 let automaticFaceCheck = false;
 const automaticCueGate = new FramingCueGate();
 let avatarConfigured = false;
+let avatarGermanConfigured = false;
+let avatarInterruptionSupported = false;
+let avatarEnglishError = "Checking avatar configuration...";
+let avatarGermanError = "Checking German avatar configuration...";
 let responseTimer: ReturnType<typeof setTimeout> | undefined;
 let connectionTimer: ReturnType<typeof setTimeout> | undefined;
 let avatarTimer: ReturnType<typeof setTimeout> | undefined;
@@ -61,13 +73,26 @@ let lastOutput: HTMLElement | undefined;
 let outputSource: "text" | "audio" | undefined;
 let requestedAt = 0;
 let firstOutput = false;
+let welcomeResponsePending = false;
+let welcomePlayback: WelcomePlaybackGate | undefined;
+let welcomePlaybackTimer: ReturnType<typeof setInterval> | undefined;
 let receivedCount = 0;
 let firstLatencies: number[] = [];
 let sessionConfigurationSent = false;
+let sessionDefaultOutput: Record<string, unknown> | undefined;
 let pendingCalls: Array<{ id: string; name: string; arguments: string }> = [];
 let processingCall = false;
 let pendingAvatarMode: boolean | undefined;
 let resumeMicrophone = false;
+let coachInstructions = defaultCoachInstructions;
+let coachLanguage: CoachLanguage = "en";
+let draftLanguage: CoachLanguage = "en";
+let changingLanguage = false;
+let instructionsPersisted = false;
+let pendingInstructions: {
+  value: string; language: CoachLanguage; applied: string; expectedOutput?: Record<string, unknown>;
+  timer: ReturnType<typeof setTimeout>;
+} | undefined;
 let coachingSettings: CoachingSettings = { ...defaultCoachingSettings };
 const settingsFields: Array<[keyof CoachingSettings, string, string]> = [
   ["eyeLine", "setting-eye", "value-eye"], ["headX", "setting-x", "value-x"],
@@ -133,10 +158,45 @@ function saveCoachingSettings(): void {
   try { localStorage.setItem("video-coach-settings-v1", JSON.stringify(coachingSettings)); }
   catch { showError("Could not save your framing settings in this browser. They will last only for this page."); }
 }
+function saveCoachInstructions(): void {
+  try {
+    localStorage.setItem("video-coach-instructions-v2", JSON.stringify({
+      instructions: coachInstructions, language: coachLanguage,
+    }));
+    instructionsPersisted = true;
+  } catch {
+    instructionsPersisted = false;
+    showError("Could not save coach instructions in this browser. They will last only for this page.");
+  }
+}
+function renderInstructionControls(available: boolean): void {
+  const dirty = instructionsEditor.value !== coachInstructions || languageSelector.value !== coachLanguage;
+  const connected = socket?.readyState === WebSocket.OPEN && gate.ready;
+  instructionsEditor.disabled = Boolean(pendingInstructions) || changingLanguage;
+  languageSelector.disabled = Boolean(pendingInstructions) || changingLanguage;
+  button("apply-instructions").disabled = Boolean(pendingInstructions) || connecting || changingLanguage || !dirty ||
+    Boolean(socket && (!available || faceCheck));
+  button("reset-instructions").disabled = Boolean(pendingInstructions) || changingLanguage ||
+    instructionsEditor.value === defaultCoachInstructionsFor(draftLanguage);
+  instructionStatus.textContent = pendingInstructions ? "Applying instructions to the connected coach..." :
+    dirty ? "Unapplied edits. Choose Apply language & instructions." :
+      (connected ? "Applied to the connected coach." : "These instructions will be used when the coach connects.") +
+      (instructionsPersisted ? " Saved in this browser for this address." :
+        coachInstructions === defaultCoachInstructionsFor(coachLanguage) ? " Using the built-in default." : " Not saved in this browser.");
+}
+function avatarAvailable(language: CoachLanguage): boolean {
+  return language === "de" ? avatarGermanConfigured : avatarConfigured;
+}
+function avatarUnavailableMessage(language: CoachLanguage): string {
+  return language === "de" ? avatarGermanError : avatarEnglishError;
+}
 function refresh(): void {
   const connected = socket?.readyState === WebSocket.OPEN;
-  const available = Boolean(connected && gate.ready && !gate.busy && !gate.speaking && !processingCall);
-  button("connect").disabled = !configured || !consent.checked || connecting || Boolean(socket);
+  const available = Boolean(connected && gate.ready && !gate.busy && !gate.speaking && !processingCall &&
+    !pendingInstructions && !micBusy);
+  renderInstructionControls(available);
+  button("connect").disabled = !configured || !consent.checked || connecting || changingLanguage || Boolean(socket) ||
+    (avatarEnabled.checked && !avatarAvailable(coachLanguage));
   button("connect").textContent = connecting ? "Connecting..." : "Connect coach";
   button("disconnect").disabled = !socket;
   button("assess").disabled = !available || !cameraStream || !consent.checked || cameraBusy;
@@ -155,7 +215,12 @@ function refresh(): void {
   element("recording-label", HTMLElement).hidden = !recorder;
   button("send").disabled = !available;
   checkbox("message").disabled = !available;
-  avatarEnabled.disabled = connecting || Boolean(socket) || !avatarConfigured;
+  avatarEnabled.disabled = connecting || changingLanguage || Boolean(socket) ||
+    (!avatarEnabled.checked && !avatarAvailable(coachLanguage));
+  element("avatar-hint", HTMLElement).textContent = avatarAvailable(coachLanguage) ?
+    avatarInterruptionSupported ? "Preview · extra Azure charges" :
+      "Preview · update the local server for voice interruption; download any take before restarting." :
+    avatarUnavailableMessage(coachLanguage);
   element("camera-state", HTMLElement).textContent = cameraStream ? "LIVE · LOCAL" : "OFFLINE";
   element("camera-placeholder", HTMLElement).hidden = Boolean(cameraStream);
 }
@@ -163,6 +228,14 @@ function send(event: object): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Voice connection is not open.");
   if (socket.bufferedAmount > 1_000_000) throw new Error("Connection is too slow. Disconnect and try again.");
   socket.send(JSON.stringify(event));
+}
+function clearAvatarPlayback(): void {
+  const clear = avatarPlaybackClear(sessionUsesAvatar, avatarInterruptionSupported);
+  if (clear) send(clear);
+}
+function requestResponse(): void {
+  if (!welcomeResponsePending) stopWelcomePlayback();
+  for (const event of responseRequestEvents(sessionUsesAvatar, avatarInterruptionSupported)) send(event);
 }
 function note(role: "user" | "coach", text: string): HTMLElement {
   transcript.querySelector(".empty")?.remove();
@@ -311,7 +384,53 @@ function armResponseTimer(): void {
     void disconnect().catch(showError);
   }, 45_000);
 }
+function stopWelcomePlayback(): void {
+  clearInterval(welcomePlaybackTimer);
+  welcomePlaybackTimer = undefined;
+  welcomePlayback = undefined;
+}
+function trackWelcomePlayback(): void {
+  stopWelcomePlayback();
+  const tracker = new WelcomePlaybackGate(sessionUsesAvatar);
+  welcomePlayback = tracker;
+  welcomePlaybackTimer = setInterval(() => {
+    const state = tracker.check(performance.now(), audio.isPlaying, audio.avatarLevel());
+    if (state === "waiting") return;
+    stopWelcomePlayback();
+    if (state === "unavailable") {
+      autoCoach.checked = false;
+      status.textContent = "Automatic coaching is paused. Reconnect to check welcome playback.";
+      showError("Could not verify the coach's welcome audio. Automatic coaching was turned off.");
+      refresh();
+    }
+  }, 100);
+}
+function speakWelcome(): void {
+  if (!gate.beginWelcome()) return;
+  try {
+    requestedAt = performance.now();
+    firstOutput = false;
+    welcomeResponsePending = true;
+    trackWelcomePlayback();
+    send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [
+        { type: "input_text", text: coachWelcomeInstruction(coachLanguage) },
+      ] },
+    });
+    requestResponse();
+    armResponseTimer();
+  } catch (error) {
+    welcomeResponsePending = false;
+    stopWelcomePlayback();
+    gate.busy = false;
+    requestedAt = 0;
+    showError(error);
+    void disconnect(true).catch(showError);
+  }
+}
 async function assess(automatic = false, toolCall = false): Promise<string | undefined> {
+  if (automatic && welcomePlayback) return;
   const stream = cameraStream;
   const currentSocket = socket;
   if (!stream || !consent.checked || cameraBusy) {
@@ -319,7 +438,7 @@ async function assess(automatic = false, toolCall = false): Promise<string | und
     return;
   }
   const currentGate = gate;
-  if (faceCheck || (!automatic && !toolCall && !currentGate.begin(Date.now())) ||
+  if (faceCheck || pendingInstructions || (!automatic && !toolCall && !currentGate.begin(Date.now())) ||
       (toolCall && (!currentGate.ready || currentGate.busy || currentGate.speaking || faceCheck))) {
     if (!automatic) status.textContent = "Wait for the current turn to finish before sharing another frame.";
     return;
@@ -386,7 +505,7 @@ async function assess(automatic = false, toolCall = false): Promise<string | und
       faceBoxAvailable = true;
     }
     element("measurement-result", HTMLElement).textContent = measurementSummary(payload);
-    const customized = applyCoachingSettings(payload, coachingSettings);
+    const customized = applyCoachingSettings(payload, coachingSettings, coachLanguage);
     if (toolCall) {
       status.textContent = "Face measurements are ready.";
       return customized.spokenText;
@@ -394,11 +513,7 @@ async function assess(automatic = false, toolCall = false): Promise<string | und
     let spokenText = customized.spokenText;
     let autoCue: ReturnType<typeof framingCue> | undefined;
     if (automatic) {
-      autoCue = framingCue(payload, coachingSettings);
-      if (autoCue.key === "aligned" && customized.feedback.length) {
-        const text = customized.feedback[0];
-        if (text) autoCue = { key: `setup:${text}`, text };
-      }
+      autoCue = framingCue(payload, coachingSettings, coachLanguage);
       const now = Date.now();
       if (!automaticCueGate.shouldSpeak(autoCue, now) || processingCall || !currentGate.begin(now, false)) return;
       ownsGate = true;
@@ -407,14 +522,15 @@ async function assess(automatic = false, toolCall = false): Promise<string | und
     requestedAt = performance.now();
     firstOutput = false;
     const instruction =
-      "Speak in English (US). Read this exact approved English camera-feedback line aloud " +
+      `Speak in ${coachLanguage === "de" ? "German" : "English (US)"}. ` +
+      "Read this exact approved camera-feedback line aloud " +
       "verbatim; do not translate it, change language, or add observations: " +
       `"${spokenText}"`;
     send({
       type: "conversation.item.create",
       item: { type: "message", role: "user", content: [{ type: "input_text", text: instruction }] },
     });
-    send({ type: "response.create" });
+    requestResponse();
     responseSent = true;
     if (autoCue) automaticCueGate.spoken(autoCue, Date.now());
     armResponseTimer();
@@ -450,25 +566,30 @@ function firstResponseOutput(): void {
     `${++receivedCount} requested turns · first output ${latency} ms · median ${median} ms. ` +
     `Mode: ${sessionUsesAvatar ? "avatar" : "voice only"}. These timings do not prove audible or avatar startup latency.`;
 }
-async function connect(): Promise<void> {
+async function connect(startListening = true): Promise<void> {
   if (!consent.checked || socket || connecting) return;
+  if (avatarEnabled.checked && !avatarAvailable(coachLanguage)) {
+    throw new Error(avatarUnavailableMessage(coachLanguage));
+  }
   const attempt = ++connectionAttempt;
   connecting = true;
   sessionUsesAvatar = avatarEnabled.checked;
   sessionConfigurationSent = false;
+  welcomeResponsePending = false;
   gate = new ResponseGate();
   clearError();
   refresh();
   try {
-    await ensureMicrophone();
+    if (startListening) await ensureMicrophone();
     if (attempt !== connectionAttempt || !consent.checked) { releaseUnusedMicrophone(); return; }
     await audio.unlock();
     if (attempt !== connectionAttempt || !consent.checked) { releaseUnusedMicrophone(); return; }
-    resumeMicrophone = true;
+    resumeMicrophone = startListening;
     peer?.close();
     peer = undefined;
     avatarVideo.hidden = true;
-    const current = new WebSocket(`ws://${location.host}/voice${sessionUsesAvatar ? "?mode=avatar" : ""}`);
+    const route = sessionUsesAvatar ? (coachLanguage === "de" ? "?mode=avatar&language=de" : "?mode=avatar") : "";
+    const current = new WebSocket(`ws://${location.host}/voice${route}`);
     socket = current;
     connectionTimer = setTimeout(() => {
       showError("Voice connection timed out.");
@@ -479,7 +600,7 @@ async function connect(): Promise<void> {
       void Promise.resolve().then(() => handleEvent(JSON.parse(String(event.data)) as unknown)).catch(error => {
         if (socket !== current) return;
         showError(error);
-        void disconnect().catch(showError);
+        void disconnect(true).catch(showError);
       });
     };
     current.onerror = () => {
@@ -497,12 +618,18 @@ async function connect(): Promise<void> {
     throw error;
   }
 }
-async function disconnect(): Promise<void> {
+async function disconnect(preserveError = false): Promise<void> {
   cancelFaceCheck();
   automaticCueGate.reset();
+  if (pendingInstructions) {
+    clearTimeout(pendingInstructions.timer);
+    pendingInstructions = undefined;
+    if (!preserveError) showError("The instruction update was not confirmed. Reconnect and apply it again.");
+  }
   connectionAttempt++;
   const current = socket;
   socket = undefined;
+  stopWelcomePlayback();
   clearTimeout(connectionTimer);
   clearTimeout(avatarTimer);
   clearResponseTimer();
@@ -514,6 +641,7 @@ async function disconnect(): Promise<void> {
   pendingAvatarMode = undefined;
   resumeMicrophone = false;
   requestedAt = 0;
+  welcomeResponsePending = false;
   avatarAbort?.abort();
   avatarAbort = undefined;
   peer?.close();
@@ -522,6 +650,7 @@ async function disconnect(): Promise<void> {
   avatarAudio.srcObject = null;
   avatarVideo.hidden = true;
   sessionUsesAvatar = false;
+  sessionDefaultOutput = undefined;
   micEnabled = false;
   audio.stopCapture();
   releaseUnusedMicrophone();
@@ -544,7 +673,7 @@ async function toggleMicrophone(): Promise<void> {
       if (!socket || !consent.checked) { releaseUnusedMicrophone(); return; }
       await audio.capture(stream, data => {
         try {
-          if (micEnabled && consent.checked && !processingCall) {
+          if (micEnabled && consent.checked && !processingCall && !pendingInstructions) {
             send({ type: "input_audio_buffer.append", audio: data });
           }
         } catch (error) { showError(error); void disconnect().catch(showError); }
@@ -632,7 +761,9 @@ async function runControl(name: string, rawArguments: string): Promise<string> {
       return "Coach disconnected.";
     case "enable_avatar":
     case "disable_avatar":
-      if (!avatarConfigured) throw new Error("The avatar is not configured.");
+      if (action === "enable_avatar" && !avatarAvailable(coachLanguage)) {
+        throw new Error(avatarUnavailableMessage(coachLanguage));
+      }
       if (sessionUsesAvatar === (action === "enable_avatar")) return "That avatar mode is already active.";
       pendingAvatarMode = action === "enable_avatar";
       return "The coach will reconnect in the requested avatar mode.";
@@ -687,6 +818,7 @@ async function startAvatar(session: Record<string, unknown>): Promise<void> {
     gate.ready = true;
     element("connection-state", HTMLElement).textContent = "CONNECTED";
     status.textContent = "Avatar connected. Check your setup or enable the microphone.";
+    speakWelcome();
     resumeMicrophoneIfRequested();
     refresh();
   };
@@ -706,6 +838,11 @@ async function startAvatar(session: Record<string, unknown>): Promise<void> {
       void avatarVideo.play().then(() => { videoReady = true; ready(); }).catch(() => playbackFailed("video"));
     } else if (event.track.kind === "audio") {
       avatarAudio.srcObject = stream;
+      try { audio.monitorAvatar(stream); }
+      catch (error) {
+        autoCoach.checked = false;
+        showError(`Could not monitor avatar audio; automatic coaching was turned off. ${error instanceof Error ? error.message : String(error)}`);
+      }
       void avatarAudio.play().then(() => { audioReady = true; ready(); }).catch(() => playbackFailed("audio"));
     }
   };
@@ -736,11 +873,43 @@ async function handleEvent(value: unknown): Promise<void> {
       status.textContent = "Azure connection opened. Waiting for the voice session...";
       break;
     case "session.updated":
+      if (pendingInstructions) {
+        const session = object(event.session);
+        const reported = session.instructions;
+        if (typeof reported !== "string" || reported !== pendingInstructions.applied) {
+          throw new Error("The coach did not confirm the requested instructions. Reconnect and try again.");
+        }
+        if (pendingInstructions.expectedOutput) {
+          const output = object(object(session.audio).output);
+          if (!voiceOutputMatches(output, pendingInstructions.expectedOutput)) {
+            throw new Error("The coach did not confirm the requested voice. Reconnect and try again.");
+          }
+        }
+        clearTimeout(pendingInstructions.timer);
+        coachInstructions = pendingInstructions.value;
+        coachLanguage = pendingInstructions.language;
+        pendingInstructions = undefined;
+        automaticCueGate.reset();
+        saveCoachInstructions();
+        status.textContent = "Coach instructions updated for this session.";
+        break;
+      }
       if (!sessionConfigurationSent) {
         sessionConfigurationSent = true;
-        const output = sessionUsesAvatar ? {} : object(object(object(event.session).audio).output);
-        send(sessionSettings(output, sessionUsesAvatar));
+        const output = object(object(object(event.session).audio).output);
+        if (sessionUsesAvatar && coachLanguage === "de" &&
+            (typeof output.voice !== "string" || !output.voice.toLowerCase().startsWith("de-") ||
+             typeof output.voice_locale !== "string" || !output.voice_locale.toLowerCase().startsWith("de-"))) {
+          throw new Error("The configured German avatar did not report a German voice. Check FOUNDRY_AVATAR_DE_AGENT_NAME.");
+        }
+        sessionDefaultOutput = sessionUsesAvatar ? undefined : output;
+        send(sessionSettings(output, sessionUsesAvatar, coachInstructions, coachLanguage));
         break;
+      }
+      if (!connecting && gate.ready) break;
+      if (!sessionUsesAvatar && coachLanguage === "de") {
+        const output = object(object(object(event.session).audio).output);
+        if (!voiceOutputMatches(output, germanVoice)) throw new Error("The coach did not confirm the German voice.");
       }
       clearTimeout(connectionTimer);
       if (sessionUsesAvatar) {
@@ -753,6 +922,7 @@ async function handleEvent(value: unknown): Promise<void> {
         gate.ready = true;
         element("connection-state", HTMLElement).textContent = "CONNECTED";
         status.textContent = "Coach ready. Check your setup to share a current frame.";
+        speakWelcome();
         resumeMicrophoneIfRequested();
       }
       break;
@@ -781,12 +951,15 @@ async function handleEvent(value: unknown): Promise<void> {
     case "response.output_audio.delta":
       if (typeof event.delta === "string" && !sessionUsesAvatar) {
         audio.play(event.delta);
+        if (welcomeResponsePending) welcomePlayback?.receivedAudio();
         firstResponseOutput();
       }
       break;
     case "input_audio_buffer.speech_started":
       gate.speaking = true;
+      stopWelcomePlayback();
       audio.stopPlayback();
+      clearAvatarPlayback();
       break;
     case "input_audio_buffer.speech_stopped":
       gate.speaking = false;
@@ -806,9 +979,15 @@ async function handleEvent(value: unknown): Promise<void> {
     case "response.done": {
       clearResponseTimer();
       gate.busy = false;
+      const wasWelcome = welcomeResponsePending;
+      welcomeResponsePending = false;
       const response = object(event.response);
       if (response.status !== "completed" && response.status !== "cancelled") {
         throw new Error(`Voice turn failed (${String(response.status)}). Reconnect and try again.`);
+      }
+      if (wasWelcome) {
+        if (response.status === "completed") welcomePlayback?.completed(performance.now());
+        else stopWelcomePlayback();
       }
       if (response.status === "cancelled") {
         pendingCalls = [];
@@ -836,7 +1015,7 @@ async function handleEvent(value: unknown): Promise<void> {
               type: "function_call_output", call_id: call.id, output: result,
             } });
           }
-          send({ type: "response.create" });
+          requestResponse();
           gate.busy = true;
           armResponseTimer();
         } finally {
@@ -852,8 +1031,10 @@ async function handleEvent(value: unknown): Promise<void> {
         break;
       }
       status.textContent = autoCoach.checked ? "Automatic framing checks are active." :
-        "Make an adjustment, then check again. Automatic feedback is opt-in.";
+        wasWelcome ? "Coach ready. Ask for a setup check or enable automatic coaching." :
+          "Make an adjustment, then check again. Automatic feedback is opt-in.";
       requestedAt = 0;
+      speakWelcome();
       break;
     }
     case "proxy.error":
@@ -876,6 +1057,85 @@ button("connect").onclick = () => { void connect().catch(showError); };
 button("disconnect").onclick = () => { void disconnect().catch(showError); };
 button("assess").onclick = () => { void assess().catch(showError); };
 button("microphone").onclick = () => { void toggleMicrophone().catch(showError); };
+instructionsEditor.addEventListener("input", refresh);
+languageSelector.addEventListener("change", () => {
+  if (!isCoachLanguage(languageSelector.value)) {
+    languageSelector.value = draftLanguage;
+    showError("Choose a supported coach language.");
+    return;
+  }
+  if (instructionsEditor.value === defaultCoachInstructionsFor(draftLanguage)) {
+    instructionsEditor.value = defaultCoachInstructionsFor(languageSelector.value);
+  }
+  draftLanguage = languageSelector.value;
+  refresh();
+});
+button("reset-instructions").onclick = () => {
+  instructionsEditor.value = defaultCoachInstructionsFor(draftLanguage);
+  refresh();
+};
+button("apply-instructions").onclick = () => { void applyInstructions().catch(showError); };
+async function applyInstructions(): Promise<void> {
+  const value = instructionsEditor.value;
+  if (!validCoachInstructions(value)) {
+    showError("Coach instructions must contain 1 to 8,000 characters.");
+    return;
+  }
+  if (!socket) {
+    coachInstructions = value;
+    coachLanguage = draftLanguage;
+    automaticCueGate.reset();
+    saveCoachInstructions();
+    refresh();
+    return;
+  }
+  if (connecting || !gate.ready || gate.busy || gate.speaking || processingCall || micBusy || faceCheck || pendingInstructions) {
+    showError("Wait for the current coaching activity to finish before applying instructions.");
+    return;
+  }
+  if (sessionUsesAvatar && draftLanguage !== coachLanguage) {
+    if (!avatarAvailable(draftLanguage)) {
+      showError(avatarUnavailableMessage(draftLanguage));
+      return;
+    }
+    const wasListening = micEnabled;
+    changingLanguage = true;
+    refresh();
+    try {
+      await disconnect();
+      coachInstructions = value;
+      coachLanguage = draftLanguage;
+      automaticCueGate.reset();
+      saveCoachInstructions();
+      status.textContent = "Reconnecting the avatar with the selected language and voice...";
+      await connect(wasListening);
+    } finally {
+      changingLanguage = false;
+      refresh();
+    }
+    return;
+  }
+  try {
+    const changeVoice = !sessionUsesAvatar && draftLanguage !== coachLanguage;
+    if (changeVoice && (!sessionDefaultOutput || typeof sessionDefaultOutput.voice !== "string" ||
+        !sessionDefaultOutput.voice)) throw new Error("The current voice settings are unavailable. Reconnect and try again.");
+    const expectedOutput = changeVoice && sessionDefaultOutput ?
+      voiceOutputForLanguage(sessionDefaultOutput, draftLanguage) : undefined;
+    const applied = composeCoachInstructions(value, draftLanguage);
+    const timer = setTimeout(() => {
+      if (!pendingInstructions) return;
+      showError("The coach did not confirm the instruction update. The session has been disconnected.");
+      void disconnect(true).catch(showError);
+    }, 15_000);
+    pendingInstructions = { value, language: draftLanguage, applied, expectedOutput, timer };
+    send(instructionUpdate(value, draftLanguage, changeVoice ? sessionDefaultOutput : undefined));
+  } catch (error) {
+    if (pendingInstructions) clearTimeout(pendingInstructions.timer);
+    pendingInstructions = undefined;
+    showError(error);
+  }
+  refresh();
+}
 for (const [key, inputId] of settingsFields) {
   checkbox(inputId).addEventListener("input", () => {
     const updated = { ...coachingSettings, [key]: Number(checkbox(inputId).value) / 100 };
@@ -920,13 +1180,13 @@ element("message-form", HTMLFormElement).onsubmit = event => {
   event.preventDefault();
   const input = checkbox("message");
   const text = input.value.trim();
-  if (!text || !gate.begin(Date.now(), false)) return;
+  if (!text || pendingInstructions || !gate.begin(Date.now(), false)) return;
   try {
     requestedAt = performance.now();
     firstOutput = false;
     send({ type: "conversation.item.create", item: { type: "message", role: "user",
       content: [{ type: "input_text", text }] } });
-    send({ type: "response.create" });
+    requestResponse();
     armResponseTimer();
     note("user", text);
     input.value = "";
@@ -934,7 +1194,7 @@ element("message-form", HTMLFormElement).onsubmit = event => {
   refresh();
 };
 setInterval(() => {
-  if (autoCoach.checked && consent.checked && cameraStream && !cameraBusy && gate.ready && !document.hidden &&
+  if (autoCoach.checked && consent.checked && cameraStream && !cameraBusy && gate.ready && !pendingInstructions && !welcomePlayback && !document.hidden &&
       socket?.readyState === WebSocket.OPEN) {
     void assess(true).catch(error => { autoCoach.checked = false; showError(error); });
   }
@@ -965,10 +1225,14 @@ void fetch("/api/config").then(async response => {
       "Eye line and head height are visual only. Custom exposure thresholds need an updated server; download any take before restarting.";
   }
   avatarConfigured = config.avatarConfigured === true;
+  avatarGermanConfigured = config.avatarVoiceLanguageRoutingSupported === true && config.avatarGermanConfigured === true;
+  avatarInterruptionSupported = config.avatarInterruptionSupported === true;
+  avatarEnglishError = typeof config.avatarError === "string" ? config.avatarError : "Avatar is not configured.";
+  avatarGermanError = config.avatarVoiceLanguageRoutingSupported !== true ?
+    "German avatar needs an updated local server. Download any take before restarting." :
+    typeof config.avatarGermanError === "string" ? config.avatarGermanError : "German avatar is not configured.";
   configured = config.configured === true && faceConfigured;
   element("project-info", HTMLElement).textContent = `${String(config.agent)} · ${String(config.endpoint ?? "Not configured")}`;
-  element("avatar-hint", HTMLElement).textContent = avatarConfigured ? "Preview · extra Azure charges" :
-    typeof config.avatarError === "string" ? config.avatarError : "Avatar is not configured.";
   element("face-box-hint", HTMLElement).textContent = faceOutlineSupported ?
     "Latest checked snapshot only, not live tracking. The box is not recorded." :
     "Face box needs an updated local server. Download any take, then restart the server.";
@@ -982,6 +1246,32 @@ void fetch("/api/config").then(async response => {
   element("face-box-hint", HTMLElement).textContent = "Face box unavailable: could not load local server configuration.";
   showError(error);
 });
+try {
+  const saved = localStorage.getItem("video-coach-instructions-v2");
+  if (saved !== null) {
+    const parsed: unknown = JSON.parse(saved);
+    const entry = object(parsed);
+    if (!validCoachInstructions(entry.instructions) || !isCoachLanguage(entry.language)) {
+      throw new Error("Saved coach language or instructions are invalid.");
+    }
+    coachInstructions = entry.instructions;
+    coachLanguage = entry.language;
+    instructionsPersisted = true;
+  } else {
+    const old = localStorage.getItem("video-coach-instructions-v1");
+    if (old !== null) {
+      if (!validCoachInstructions(old)) throw new Error("Saved coach instructions are invalid.");
+      coachInstructions = old === legacyDefaultCoachInstructions ? defaultCoachInstructions : old;
+      instructionsPersisted = true;
+    }
+  }
+} catch {
+  instructionsPersisted = false;
+  showError("Could not load saved coach instructions; defaults are in use.");
+}
+draftLanguage = coachLanguage;
+languageSelector.value = coachLanguage;
+instructionsEditor.value = coachInstructions;
 try {
   const saved = localStorage.getItem("video-coach-settings-v1");
   if (saved) {

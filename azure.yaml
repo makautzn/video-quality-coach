@@ -4,9 +4,15 @@ infra:
     provider: microsoft.foundry
 name: video-quality-coach
 services:
+    ai-project:
+        host: azure.ai.project
+        endpoint: ${AZURE_AI_PROJECT_ENDPOINT}
     video-quality-coach:
         host: azure.ai.agent
         kind: voice
+        project: .
+        uses:
+            - ai-project
         name: video-quality-coach
         modelType: managed
         model:
@@ -23,16 +29,53 @@ services:
             people or infer sensitive traits, emotions, health, attractiveness, or
             demographic identity. Never describe a still-frame measurement as continuous
             video assessment.
+        audio:
+            output:
+                voice:
+                    type: azure-standard
+                    name: en-US-Ava:DragonHDLatestNeural
+                    locale: en-US
         outputModalities: [audio, text]
+        store: false
+    video-coach-avatar-de-abc06568:
+        host: azure.ai.agent
+        kind: voice
+        project: .
+        uses:
+            - ai-project
+        name: video-coach-avatar-de-abc06568
+        modelType: managed
+        model:
+            id: gpt-realtime
+        description: German female voice and Leonie photo avatar for the camera setup coach.
+        instructions: >-
+            Du bist die Stimme eines Kameracoachs. Lies freigegebene Rückmeldungen
+            wortgetreu vor und erfinde keine visuellen Beobachtungen.
+        audio:
+            output:
+                voice:
+                    type: azure-standard
+                    name: de-DE-Seraphina:DragonHDLatestNeural
+                    locale: de-DE
+        outputModalities: [audio, text, avatar]
+        avatar:
+            type: photo_avatar
+            character: leonie
+            style: casual
+            model: vasa-2
+            output_protocol: webrtc
         store: false
     video-coach-avatar-check-abc06568:
         host: azure.ai.agent
         kind: voice
+        project: .
+        uses:
+            - ai-project
         name: video-coach-avatar-check-abc06568
         modelType: managed
         model:
             id: gpt-realtime
-        description: Isolated test of a preset voice-agent avatar.
+        description: English female voice and Leonie photo avatar for the camera setup coach.
         instructions: >-
             You are a test voice for a camera setup coach. Read user-provided
             approved feedback exactly. Do not infer or claim visual observations.
@@ -40,12 +83,13 @@ services:
             output:
                 voice:
                     type: azure-standard
-                    name: en-US-Andrew:DragonHDLatestNeural
+                    name: en-US-Ava:DragonHDLatestNeural
                     locale: en-US
         outputModalities: [audio, text, avatar]
         avatar:
             type: photo_avatar
-            character: adrian
-            model: vasa-1
+            character: leonie
+            style: casual
+            model: vasa-2
             output_protocol: webrtc
         store: false

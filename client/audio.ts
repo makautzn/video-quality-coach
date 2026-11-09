@@ -5,6 +5,12 @@ export class AudioIO {
   private mute?: GainNode;
   private nextTime = 0;
   private readonly playing = new Set<AudioBufferSourceNode>();
+  private avatarSource?: MediaStreamAudioSourceNode;
+  private avatarAnalyser?: AnalyserNode;
+  private avatarMute?: GainNode;
+  private avatarSamples?: Float32Array<ArrayBuffer>;
+
+  get isPlaying(): boolean { return this.playing.size > 0; }
 
   async unlock(): Promise<void> {
     this.context ??= new AudioContext({ sampleRate: 24_000 });
@@ -67,9 +73,41 @@ export class AudioIO {
     this.playing.clear();
     this.nextTime = 0;
   }
+  monitorAvatar(stream: MediaStream): void {
+    const context = this.context;
+    if (!context) throw new Error("Audio output has not been initialized.");
+    this.stopAvatarMonitor();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 2048;
+    const mute = context.createGain();
+    mute.gain.value = 0;
+    source.connect(analyser).connect(mute).connect(context.destination);
+    this.avatarSource = source;
+    this.avatarAnalyser = analyser;
+    this.avatarMute = mute;
+    this.avatarSamples = new Float32Array(analyser.fftSize);
+  }
+  avatarLevel(): number | undefined {
+    if (!this.avatarAnalyser || !this.avatarSamples) return undefined;
+    this.avatarAnalyser.getFloatTimeDomainData(this.avatarSamples);
+    let energy = 0;
+    for (const sample of this.avatarSamples) energy += sample * sample;
+    return Math.sqrt(energy / this.avatarSamples.length);
+  }
+  stopAvatarMonitor(): void {
+    this.avatarSource?.disconnect();
+    this.avatarAnalyser?.disconnect();
+    this.avatarMute?.disconnect();
+    this.avatarSource = undefined;
+    this.avatarAnalyser = undefined;
+    this.avatarMute = undefined;
+    this.avatarSamples = undefined;
+  }
   async close(): Promise<void> {
     this.stopCapture();
     this.stopPlayback();
+    this.stopAvatarMonitor();
     const context = this.context;
     this.context = undefined;
     if (context && context.state !== "closed") await context.close();
