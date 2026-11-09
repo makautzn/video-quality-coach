@@ -1,0 +1,48 @@
+{
+  "dimensions": [
+    {
+      "always_applicable": false,
+      "description": "The agent accurately identifies observable issues in the supplied image, prioritizing severe problems such as clipped head or poor lighting.",
+      "id": "correct_visual_analysis",
+      "weight": 10
+    },
+    {
+      "always_applicable": false,
+      "description": "Corrections are concise, specific, and actionable, addressing no more than two issues per response.",
+      "id": "actionable_corrections",
+      "weight": 6
+    },
+    {
+      "always_applicable": false,
+      "description": "The agent appropriately handles edge cases such as missing or unclear images, clipped head, poor lighting, or image prompt injection, ensuring responses are tailored to the scenario.",
+      "id": "edge_case_handling",
+      "weight": 5
+    },
+    {
+      "always_applicable": false,
+      "description": "Responses are concise (under 35 words), clear, and easy to understand, avoiding information overload while maintaining actionable advice.",
+      "id": "brevity_and_clarity",
+      "weight": 4
+    },
+    {
+      "always_applicable": false,
+      "description": "The agent strictly bases corrections on observable visual input, avoiding speculative claims, sensitive trait inference, or identity-related comments.",
+      "id": "visual_input_adherence",
+      "weight": 3
+    },
+    {
+      "always_applicable": false,
+      "description": "Corrections are phrased in a conversational and supportive tone, avoiding commands, judgments of appearance, or overly formal language.",
+      "id": "natural_tone",
+      "weight": 2
+    },
+    {
+      "always_applicable": true,
+      "description": "Other important quality factors not covered by listed criteria.",
+      "id": "general_quality",
+      "weight": 5
+    }
+  ],
+  "pass_threshold": 0.5,
+  "type": "rubric"
+}

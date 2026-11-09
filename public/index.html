@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frame / Video setup coach</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/client/main.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="/">frame<span>/</span></a><span class="eyebrow">YOUR VIDEO SETUP, DIALED IN</span><span class="badge">FOUNDRY VOICE · PREVIEW</span></header>
+  <main>
+    <section class="intro"><p class="eyebrow">A LITTLE GUIDANCE. A BETTER TAKE.</p><h1>Look ready.<br><em>Sound like yourself.</em></h1><p>Your camera, a helpful voice, and a few small adjustments.<br>Get your lighting and framing right before you hit record.</p></section>
+    <div id="error" role="alert" hidden></div>
+    <div class="workspace">
+      <section class="camera-panel">
+        <div class="panel-top"><span><span class="dot"></span> YOUR CAMERA</span><span id="camera-state">OFFLINE</span></div>
+        <div class="viewfinder">
+          <video id="camera" autoplay muted playsinline></video>
+          <svg id="guides" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false"><rect id="head-guide"></rect><line id="eye-line"></line><text id="eye-line-label">EYE LINE</text></svg>
+          <svg id="face-outline" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false" hidden><rect id="face-rectangle"></rect></svg>
+          <div id="camera-placeholder"><div class="camera-icon">[ o ]</div><h2>Let's find your best frame.</h2><p>Start your camera to see the framing guide.<br>Nothing is recorded or shared yet.</p></div>
+          <span id="recording-label" hidden>● RECORDING LOCALLY</span>
+          <div class="preview-caption">MIRRORED PREVIEW <span>16:9 GUIDE</span></div>
+        </div>
+        <div class="camera-controls"><button id="camera-toggle">Start camera</button><button id="face-box-toggle" class="secondary" aria-pressed="false" aria-describedby="face-box-hint" disabled>Show face box</button><button id="record" class="secondary" disabled>Record a take</button><button id="stop-record" class="secondary" hidden>Stop recording</button><a id="download" hidden>Download take</a><p id="face-box-hint">Checking face box support…</p></div>
+        <section class="guide-settings" aria-labelledby="guide-settings-title">
+          <div class="guide-heading"><div><h2 id="guide-settings-title">Your framing targets</h2><p>Adjust the preview guides and facial exposure range for your setup.</p></div><button id="reset-settings" class="secondary" type="button">Reset</button></div>
+          <div class="guide-controls">
+            <label for="setting-eye">Eye line <output id="value-eye"></output><input id="setting-eye" type="range" min="10" max="90" value="33"></label>
+            <label for="setting-x">Head position left / right <output id="value-x"></output><input id="setting-x" type="range" min="15" max="85" value="50"></label>
+            <label for="setting-y">Head position up / down <output id="value-y"></output><input id="setting-y" type="range" min="15" max="85" value="47"></label>
+            <label for="setting-width">Head width <output id="value-width"></output><input id="setting-width" type="range" min="10" max="60" value="29"></label>
+            <label for="setting-height">Head height <output id="value-height"></output><input id="setting-height" type="range" min="20" max="90" value="60"></label>
+            <label for="setting-light-min">Minimum face exposure <output id="value-light-min"></output><input id="setting-light-min" type="range" min="0" max="99" value="25" disabled></label>
+            <label for="setting-light-max">Maximum face exposure <output id="value-light-max"></output><input id="setting-light-max" type="range" min="1" max="100" value="75" disabled></label>
+          </div>
+          <p id="guide-hint" class="guide-hint">Eye line and head height are visual guides only. Head position and width guide face framing feedback. Exposure is a 0–100 facial estimate, not a room light reading.</p>
+        </section>
+      </section>
+      <aside class="coach-panel">
+        <div class="panel-top"><span>YOUR SETUP COACH</span><span id="connection-state">NOT CONNECTED</span></div>
+        <div class="coach-identity"><div class="voice-orb" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h2>A second pair of eyes.</h2><p>Practical feedback, one adjustment at a time.</p></div>
+        <video id="avatar-video" autoplay playsinline hidden></video>
+        <audio id="avatar-audio" autoplay></audio>
+        <div class="settings">
+          <label><input id="consent" type="checkbox"> I agree to send camera snapshots to Azure Face and microphone audio to the Foundry voice coach when connected.</label>
+          <label><input id="avatar-enabled" type="checkbox" disabled> Try a talking avatar <span id="avatar-hint" class="hint">Checking avatar configuration…</span></label>
+          <label><input id="auto-coach" type="checkbox"> Continuous framing coach <span class="hint">About every 3.5 seconds while connected and sharing; sends snapshots to Azure Face.</span></label>
+          <p class="privacy">The full video stays in this browser. A snapshot is sent to Azure Face for measurements, then only the resulting feedback is sent to the Foundry voice coach. Azure retention policies still apply.</p>
+        </div>
+        <div class="coach-controls"><button id="connect" disabled>Connect coach</button><button id="disconnect" class="secondary" disabled>Disconnect</button><button id="assess" class="secondary" disabled>Check my setup</button><button id="microphone" class="secondary" disabled>Enable microphone</button></div>
+        <p id="status" role="status">Start with your camera. Connect the coach when you're ready to share.</p>
+        <div id="transcript" aria-live="polite" aria-label="Coaching transcript"><p class="empty">Your coaching notes will appear here.</p></div>
+        <form id="message-form"><label class="sr-only" for="message">Ask the coach</label><input id="message" maxlength="1000" placeholder="Ask about your setup..." disabled><button id="send" disabled>Send</button></form>
+        <details><summary>Session details &amp; limitations</summary><p id="project-info"></p><p id="measurement-result">No face measurement yet.</p><p id="metrics">No feedback requested yet.</p><p>Face rectangles do not reliably include the top of the head, so this check cannot score hair clipping or headroom. Relative face size is a framing cue, not physical distance. Facial exposure is an estimate, not a light-meter reading; this check does not assess backlighting, motion, audio, or the full video.</p></details>
+      </aside>
+    </div>
+    <section id="playback-panel" hidden><h2>Your local take</h2><p>Only your camera and microphone are recorded. The face box, coach, and avatar are not mixed into this file.</p><video id="playback" controls playsinline></video></section>
+    <footer><span>SMALL ADJUSTMENTS. MORE CONFIDENCE.</span><span>Local recording / Azure-powered coaching</span></footer>
+  </main>
+</body>
+</html>

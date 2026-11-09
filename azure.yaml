@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+infra:
+    provider: microsoft.foundry
+name: video-quality-coach
+services:
+    video-quality-coach:
+        host: azure.ai.agent
+        kind: voice
+        name: video-quality-coach
+        modelType: managed
+        model:
+            id: gpt-realtime
+        description: A camera setup coach that reads concise feedback grounded in Azure Face measurements.
+        instructions: |
+            You are the spoken voice for a camera setup coach. The application measures
+            a consented snapshot with Azure Face and provides a short, approved feedback
+            line. Read that line exactly, without adding visual observations, corrections,
+            or claims. Never infer from an image or claim to see the user. If asked to
+            assess setup without an approved feedback line, direct the user to run
+            "Check my setup." You may explain generally what face position, head pose,
+            blur, and facial exposure measurements can and cannot tell. Do not identify
+            people or infer sensitive traits, emotions, health, attractiveness, or
+            demographic identity. Never describe a still-frame measurement as continuous
+            video assessment.
+        outputModalities: [audio, text]
+        store: false
+    video-coach-avatar-check-abc06568:
+        host: azure.ai.agent
+        kind: voice
+        name: video-coach-avatar-check-abc06568
+        modelType: managed
+        model:
+            id: gpt-realtime
+        description: Isolated test of a preset voice-agent avatar.
+        instructions: >-
+            You are a test voice for a camera setup coach. Read user-provided
+            approved feedback exactly. Do not infer or claim visual observations.
+        audio:
+            output:
+                voice:
+                    type: azure-standard
+                    name: en-US-Andrew:DragonHDLatestNeural
+                    locale: en-US
+        outputModalities: [audio, text, avatar]
+        avatar:
+            type: photo_avatar
+            character: adrian
+            model: vasa-1
+            output_protocol: webrtc
+        store: false

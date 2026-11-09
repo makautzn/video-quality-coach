@@ -1,0 +1,15 @@
+datasets:
+  - name: video-quality-coach-conversation-tests
+    file: ./.foundry/datasets/video-quality-coach-conversation-tests.jsonl
+    tags:
+      evaluation_level: conversation
+evaluators:
+  - name: video-quality-coach-evaluator
+    source: ./.foundry/evaluators/video-quality-coach-evaluator.json
+    displayName: video-quality-coach-evaluator
+    categories:
+      - quality
+      - agents
+    supportedEvaluationLevels:
+      - turn
+      - conversation
